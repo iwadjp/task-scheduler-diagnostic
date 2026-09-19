@@ -27,6 +27,16 @@ that conclusion.
 No AI/LLM is used. Every conclusion comes from an explicit rule match; if
 nothing matches, it says so instead of guessing.
 
+`Status` in the output is one of: `SUCCESS` (`LastTaskResult = 0`), `INFO`
+(one of the `0x41300`-`0x41306` task-state codes — the task simply hasn't
+run, is currently running, is disabled, etc.; none of these mean the last
+run failed), `FAILED` (any other non-zero result), or `UNKNOWN` (no result
+could be read, e.g. the task's info could not be queried). The "Check
+first" troubleshooting hints (LogonType, working directory, executable
+path, RunLevel) are only shown for `FAILED`; they are not shown for
+`SUCCESS` or `INFO`, so their presence never falsely implies a failure that
+did not occur.
+
 ## Why
 
 A task that fails silently under the Task Scheduler service (but runs fine
@@ -51,8 +61,13 @@ command.
 ## Usage
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\diagnose-task.ps1 -TaskName "<Scheduled Task Name>"
+powershell -ExecutionPolicy Bypass -File .\diagnose-task.ps1 -TaskName "<Scheduled Task Name>" [-TaskPath "<Task Folder Path>"]
 ```
+
+Task names are only unique **within a Task Scheduler folder**. If the same
+task name exists in more than one folder, the script will not guess which
+one you mean — it lists the matching `TaskPath`/`TaskName` pairs and exits,
+asking you to re-run with `-TaskPath` to disambiguate.
 
 Running it with no `-TaskName` prints usage instead of doing anything:
 
@@ -62,12 +77,12 @@ Running it with no `-TaskName` prints usage instead of doing anything:
 
 ```
 Usage:
-  powershell -ExecutionPolicy Bypass -File .\diagnose-task.ps1 -TaskName "<Scheduled Task Name>"
+  powershell -ExecutionPolicy Bypass -File .\diagnose-task.ps1 -TaskName "<Scheduled Task Name>" [-TaskPath "<Task Folder Path>"]
 
 Example:
   .\diagnose-task.ps1 -TaskName "MyBackupTask"
 
-Tip: run 'Get-ScheduledTask | Select-Object TaskName' to list task names on this machine.
+Tip: run 'Get-ScheduledTask | Select-Object TaskName, TaskPath' to list task names (and folders) on this machine.
 ```
 
 ## Example: failed task
@@ -101,6 +116,7 @@ Check first:
   not run or will fail immediately.
 
 Evidence:
+- Resolved task: TaskPath='\' TaskName='MyBackupTask'
 - LastTaskResult = 2147946720 (0x800710E0)
 - Principal: LogonType=Interactive, RunLevel=Limited, UserId=someuser
 - Action: Execute='powershell.exe', Arguments='-NoProfile -File C:\Scripts\backup.ps1', WorkingDirectory='C:\Scripts'
@@ -138,6 +154,7 @@ Relevant configuration:
 LogonType = Interactive; RunLevel = Limited; UserId = someuser
 
 Evidence:
+- Resolved task: TaskPath='\' TaskName='MyUpdaterTask'
 - LastTaskResult = 0 (0x00000000)
 - Principal: LogonType=Interactive, RunLevel=Limited, UserId=someuser
 - Action: Execute='%localappdata%\Vendor\Updater.exe', Arguments='', WorkingDirectory=''
@@ -150,7 +167,7 @@ Successful tasks are reported cleanly, with no spurious "Check first" warnings
 even when the executable path uses an environment variable (e.g.
 `%localappdata%\...`) — that path is expanded before being checked for
 existence, and the logon/working-directory/exe-path/RunLevel hints are only
-shown for tasks that did not succeed.
+shown for tasks with `Status: FAILED` (not for `SUCCESS` or `INFO`).
 
 ## What it checks
 
@@ -165,15 +182,25 @@ shown for tasks that did not succeed.
 **Deterministic rules (7):**
 1. Known result code lookup
 2. `LogonType = Interactive` dependency warning
-3. Working directory not set / does not exist
-4. Executable path does not exist (after environment-variable expansion)
+3. Working directory not set / does not exist (local paths only; see UNC note below)
+4. Executable path does not exist (local paths only; see UNC note below)
 5. `RunLevel = Highest` combined with `LogonType = Interactive` (possible UAC mismatch)
 6. Task is Disabled
 7. All triggers are in the future and the task has never run
 
+Rules 3 and 4 expand `%VAR%`-style environment variables before checking. If
+an environment variable cannot be resolved on the machine the script runs
+on, the path is reported as **indeterminate**, not as missing — an
+unresolved variable is not evidence that the target does not exist.
+
 Any result code or situation outside this list is reported as
 `"No known rule matched"` / `"No rule-based explanation available"` rather
 than a guess.
+
+**Task name disambiguation:** Task names are only unique within a Task
+Scheduler folder. If `-TaskName` matches tasks in more than one folder, the
+script lists the matching `TaskPath`/`TaskName` pairs and stops instead of
+guessing; re-run with `-TaskPath` to pick one.
 
 ## Limitations
 
@@ -190,11 +217,22 @@ than a guess.
   hypotheses ("may require", "can also occur"), not confirmed root causes.
 - Environment-dependent problems (network drives, per-machine account setup,
   etc.) can still require manual investigation beyond what this script surfaces.
+- A working directory or executable path that is a UNC path (`\\server\share\...`)
+  is never passed to a local existence check, so the script never attempts a
+  network call for this — it is reported as "remote path, not checked"
+  instead of existing/missing. A path on a **mapped drive letter** (e.g.
+  `Z:\...`) that happens to point to a network location is not detected as
+  remote and is checked the same way as any local path; whether that check
+  reaches the network depends on the drive mapping, which this script does
+  not inspect.
 
 ## Privacy
 
-This script is entirely local and read-only. It makes no network requests,
-sends no data anywhere, and does not modify any task, service, registry key,
-or event log setting. It only reads Task Scheduler configuration and (if
-already enabled) the Task Scheduler Operational event log on the machine it
-runs on.
+This script is local and read-only: it does not modify any task, service,
+registry key, or event log setting, and does not send data anywhere on its
+own. It only reads Task Scheduler configuration and (if already enabled)
+the Task Scheduler Operational event log on the machine it runs on. It
+deliberately avoids existence checks on UNC paths so that path-existence
+checking itself never initiates a network request; it cannot guarantee the
+same for a mapped network drive, since a mapped drive letter is
+indistinguishable from a local path to this script (see Limitations).
