@@ -47,6 +47,8 @@ go dig through Event Viewer (which is often disabled by default and has to be
 turned on first). This script collects and cross-checks all of that in one
 command.
 
+Japanese write-up: [Windows Task Schedulerが失敗する原因を1コマンドで確認するPowerShellスクリプトを作った](https://blog2020.iwadjp.com/2026/09/15/windows-task-scheduler-diagnostic-powershell/) - the original troubleshooting background and an interactive-logon failure example.
+
 ## Requirements
 
 - Windows with PowerShell 5.1 or later
